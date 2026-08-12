@@ -38,13 +38,36 @@
     window.scrollTo({ top: 0, behavior: 'instant' });
   }
 
+  // Use the original game's exact difficulty pools. This preserves the
+  // existing 1-50 / 51-150 / ... difficulty progression instead of inventing
+  // a second catalog in the secure client.
   function getCatalog() {
     try {
-      if (Array.isArray(window.players)) return window.players.map(p => ({
-        name: p.name,
-        difficulty: Number(p.difficulty) || 1,
-        aliases: []
-      }));
+      if (typeof difficultyPools !== 'undefined' && difficultyPools) {
+        const catalog = [];
+        for (const [difficulty, pool] of Object.entries(difficultyPools)) {
+          if (!Array.isArray(pool)) continue;
+          for (const p of pool) {
+            if (!p || !p.name) continue;
+            catalog.push({
+              name: p.name,
+              difficulty: Number(difficulty) || 1,
+              aliases: []
+            });
+          }
+        }
+        return catalog;
+      }
+      if (typeof playerNames !== 'undefined' && Array.isArray(playerNames)) {
+        return playerNames.map(name => ({ name, difficulty: 1, aliases: [] }));
+      }
+      if (Array.isArray(window.players)) {
+        return window.players.map(p => ({
+          name: p.name,
+          difficulty: Number(p.difficulty) || 1,
+          aliases: Array.isArray(p.aliases) ? p.aliases : []
+        }));
+      }
     } catch (e) {
       console.error('players list error', e);
     }
@@ -69,16 +92,28 @@
   async function renderImage(name) {
     const img = document.getElementById('playerPhoto');
     const fallback = document.getElementById('fallbackPlayer');
+    const status = document.getElementById('imageStatus');
     if (!img || !fallback) return;
     img.style.display = 'none';
     fallback.style.display = 'grid';
+    if (status) status.textContent = 'GÖRSEL YÜKLENİYOR...';
     try {
-      const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(name.replace(/\s+/g, '_')));
+      const r = await fetch('/api/player-image?name=' + encodeURIComponent(name));
+      if (!r.ok) throw new Error('image not found');
       const d = await r.json();
-      if (!d.thumbnail?.source) throw new Error('no image');
-      img.onload = () => { fallback.style.display = 'none'; img.style.display = 'block'; };
-      img.src = d.thumbnail.source;
-    } catch {}
+      if (!d.url) throw new Error('image not found');
+      img.onload = () => {
+        fallback.style.display = 'none';
+        img.style.display = 'block';
+        if (status) status.textContent = '';
+      };
+      img.onerror = () => {
+        if (status) status.textContent = 'GÖRSEL BULUNAMADI';
+      };
+      img.src = d.url;
+    } catch {
+      if (status) status.textContent = 'GÖRSEL BULUNAMADI';
+    }
   }
 
   function renderHints() {
