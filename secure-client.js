@@ -3,245 +3,191 @@
 
   const api = (url, options = {}) => fetch(url, {
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
   }).then(async r => {
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || 'İşlem başarısız.');
     return data;
   });
 
-  let secureQuestionId = null;
-  let secureMode = false;
-  let secureStats = null;
+  let me = null;
+  let question = null;
+  let hintsUsed = new Set();
+
+  const legacyPlayers = () => {
+    try { return eval('players'); } catch { return []; }
+  };
+  const legacyNorm = s => String(s || '').toLocaleLowerCase('tr-TR').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ı/g, 'i').replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
   function catalog() {
-    return Array.isArray(window.players)
-      ? window.players.map(p => ({ name: p.name, difficulty: p.difficulty, aliases: [] }))
-      : [];
+    return legacyPlayers().map(p => ({ name: p.name, difficulty: p.difficulty, aliases: [] }));
+  }
+
+  function message(text) {
+    const el = document.getElementById('imageStatus');
+    if (el && String(text).length < 80) el.textContent = text;
+    console.log('[Futbolcuyu Bil]', text);
   }
 
   function applyStats(s) {
     if (!s) return;
-    secureStats = s;
-    window.state = { ...window.state, ...s, usedPlayerIds: window.state?.usedPlayerIds || [] };
-    if (typeof window.render === 'function') window.render();
-    const correct = document.getElementById('correct');
-    const total = document.getElementById('total');
-    const streak = document.getElementById('streak');
-    if (correct) correct.textContent = s.correct ?? 0;
-    if (total) total.textContent = s.total ?? 0;
-    if (streak) streak.textContent = s.streak ?? 0;
+    const ids = { correct: s.correct, total: s.total, streak: s.streak };
+    Object.entries(ids).forEach(([id, value]) => { const el = document.getElementById(id); if (el) el.textContent = value ?? 0; });
+    const avatar = document.getElementById('avatar');
+    const topName = document.getElementById('userNameTop');
+    const account = document.getElementById('accountSide');
+    if (avatar) avatar.textContent = (s.name || me?.name || '?')[0].toUpperCase();
+    if (topName) topName.textContent = s.name || me?.name || 'Oyuncu';
+    if (account) account.textContent = s.name || me?.name || 'Giriş yap';
+    const mini = document.getElementById('leaderMini');
+    if (mini && me) mini.dataset.secure = '1';
   }
 
-  function showMessage(text) {
-    if (typeof window.toast === 'function') window.toast(text);
-    else console.log(text);
+  async function loadQuestionImage(name) {
+    const img = document.getElementById('playerPhoto');
+    const fallback = document.getElementById('fallbackPlayer');
+    if (!img || !fallback) return;
+    img.style.display = 'none'; fallback.style.display = 'grid';
+    try {
+      const r = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(name.replace(/\s+/g, '_')));
+      const d = await r.json();
+      if (!d.thumbnail?.source) throw new Error('no image');
+      img.onload = () => { fallback.style.display = 'none'; img.style.display = 'block'; };
+      img.src = d.thumbnail.source;
+    } catch { message('GÖRSEL BULUNAMADI'); }
   }
 
-  function setQuestion(q) {
-    if (!q) return;
-    secureQuestionId = q.id;
-    secureMode = true;
-    window.current = window.players?.find(p => window.norm(p.name) === window.norm(q.name)) || {
-      id: 0, name: q.name, difficulty: q.difficulty
-    };
-    window.usedHints = [];
-    window.startedAt = q.startedAt || Date.now();
+  function renderQuestion(q) {
+    question = q;
+    hintsUsed = new Set();
     const difficulty = document.getElementById('difficulty');
-    if (difficulty) difficulty.textContent = q.difficultyName || window.DIFFICULTIES?.[q.difficulty - 1]?.name || '';
-    if (typeof window.renderHints === 'function') window.renderHints();
-    if (typeof window.loadImage === 'function') window.loadImage();
-    if (typeof window.render === 'function') window.render();
+    if (difficulty) difficulty.textContent = q.difficultyName || '';
+    const title = document.querySelector('.question h1');
+    if (title) title.innerHTML = 'BU FUTBOLCU <span>KİM?</span>';
+    renderHints();
+    loadQuestionImage(q.name);
   }
 
-  async function startSecureGame() {
-    try {
-      const data = await api('/api/game/start', {
-        method: 'POST',
-        body: JSON.stringify({ catalog: catalog() })
-      });
-      applyStats(data.stats);
-      setQuestion(data.question);
-      return true;
-    } catch (e) {
-      showMessage(e.message);
-      return false;
-    }
-  }
-
-  window.answer = async function secureAnswer() {
-    if (!window.profile) { window.openAccount(); return; }
-    const input = document.getElementById('answer');
-    const raw = input?.value.trim();
-    if (!raw || !secureQuestionId) return;
-    try {
-      const data = await api('/api/game/answer', {
-        method: 'POST',
-        body: JSON.stringify({ questionId: secureQuestionId, answer: raw })
-      });
-      if (input) input.value = '';
-      applyStats(data.stats);
-      showMessage(data.message);
-      setQuestion(data.next);
-    } catch (e) {
-      showMessage(e.message);
-      if (e.message.includes('Soru')) await startSecureGame();
-    }
-  };
-
-  window.skip = async function secureSkip() {
-    if (!window.profile) { window.openAccount(); return; }
-    if (!secureQuestionId) return;
-    try {
-      const data = await api('/api/game/pass', {
-        method: 'POST',
-        body: JSON.stringify({ questionId: secureQuestionId })
-      });
-      const input = document.getElementById('answer');
-      if (input) input.value = '';
-      applyStats(data.stats);
-      showMessage(data.message);
-      setQuestion(data.next);
-    } catch (e) { showMessage(e.message); }
-  };
-
-  window.restartGame = async function secureRestart() {
-    if (!window.profile) { window.openAccount(); return; }
-    try {
-      const data = await api('/api/game/restart', { method: 'POST', body: '{}' });
-      applyStats(data.stats);
-      setQuestion(data.next);
-      showMessage('Oyun yeniden başladı.');
-    } catch (e) { showMessage(e.message); }
-  };
-
-  window.renderHints = function secureHints() {
+  function renderHints() {
     const box = document.getElementById('hints');
-    if (!box || !window.current) return;
-    const used = new Set(window.usedHints || []);
+    if (!box || !question) return;
     const labels = [
-      `Adı ${window.current.name.length} karakter`,
-      `İlk harfi: ${window.current.name[0]?.toUpperCase() || '?'}`,
-      `Soyadının ilk harfi: ${window.current.name.split(' ').pop()?.[0]?.toUpperCase() || '?'}`
+      `Adı ${question.name.length} karakter`,
+      `İlk harfi: ${question.name[0]?.toUpperCase() || '?'}`,
+      `Soyadının ilk harfi: ${question.name.split(' ').pop()?.[0]?.toUpperCase() || '?'}`
     ];
     const costs = [5, 5, 15];
-    box.innerHTML = labels.map((label, i) => {
-      const b = document.createElement('button');
-      b.className = 'hint';
-      b.textContent = used.has(costs[i]) ? label : `İPUCU ${i + 1} • -${costs[i]}`;
+    box.innerHTML = '';
+    labels.forEach((label, i) => {
+      const b = document.createElement('button'); b.className = 'hint';
+      b.textContent = hintsUsed.has(i) ? label : `İPUCU ${i + 1} • -${costs[i]}`;
       b.onclick = async () => {
-        if (used.has(costs[i]) || !secureQuestionId) return;
+        if (hintsUsed.has(i) || !question) return;
         try {
-          const data = await api('/api/game/hint', {
-            method: 'POST',
-            body: JSON.stringify({ questionId: secureQuestionId, index: i })
-          });
-          window.usedHints = data.used || [];
-          window.renderHints();
-        } catch (e) { showMessage(e.message); }
+          const d = await api('/api/game/hint', { method: 'POST', body: JSON.stringify({ questionId: question.id, index: i }) });
+          hintsUsed.add(i); b.textContent = d.label || label;
+        } catch (e) { message(e.message); }
       };
-      return b;
-    }).forEach(b => box.appendChild(b));
-  };
-
-  function setProfile(player) {
-    if (!player) return;
-    window.profile = { name: player.name };
-    applyStats(player);
-    localStorage.setItem('futbolcuyu_server_session_v1', '1');
-    if (window.chatSocket?.connected) window.chatSocket.emit('auth:refresh');
+      box.appendChild(b);
+    });
   }
 
-  async function serverMe() {
+  async function startGame() {
+    if (!me) { document.getElementById('accountModal').style.display = 'grid'; return; }
     try {
-      const data = await api('/api/session/me');
-      setProfile(data.player);
-      return data.player;
-    } catch { return null; }
+      const d = await api('/api/game/start', { method: 'POST', body: JSON.stringify({ catalog: catalog() }) });
+      applyStats(d.stats); renderQuestion(d.question);
+    } catch (e) { message(e.message); }
   }
 
-  async function login(username, password) {
-    const data = await api('/api/auth/login', {
-      method: 'POST', body: JSON.stringify({ username, password })
-    });
-    setProfile(data.player);
-    document.getElementById('accountModal').style.display = 'none';
-    await startSecureGame();
+  async function answer() {
+    if (!me) { document.getElementById('accountModal').style.display = 'grid'; return; }
+    const input = document.getElementById('answer'); const value = input?.value.trim();
+    if (!value || !question) return;
+    try {
+      const d = await api('/api/game/answer', { method: 'POST', body: JSON.stringify({ questionId: question.id, answer: value }) });
+      input.value = ''; applyStats(d.stats); message(d.message); renderQuestion(d.next);
+      refreshLeaderboard();
+    } catch (e) { message(e.message); }
   }
 
-  async function register(username, password) {
-    const data = await api('/api/auth/register', {
-      method: 'POST', body: JSON.stringify({ username, password })
-    });
-    setProfile(data.player);
-    document.getElementById('accountModal').style.display = 'none';
-    await startSecureGame();
+  async function pass() {
+    if (!me) { document.getElementById('accountModal').style.display = 'grid'; return; }
+    if (!question) return;
+    try {
+      const d = await api('/api/game/pass', { method: 'POST', body: JSON.stringify({ questionId: question.id }) });
+      const input = document.getElementById('answer'); if (input) input.value = '';
+      applyStats(d.stats); message(d.message); renderQuestion(d.next); refreshLeaderboard();
+    } catch (e) { message(e.message); }
   }
 
-  function wireAuth() {
-    const loginBtn = document.getElementById('loginBtn');
-    const registerBtn = document.getElementById('registerBtn');
-    if (loginBtn) loginBtn.onclick = async () => {
-      try {
-        await login(document.getElementById('loginUser').value.trim(), document.getElementById('loginPass').value);
-      } catch (e) { showMessage(e.message); }
-    };
-    if (registerBtn) registerBtn.onclick = async () => {
-      try {
-        await register(document.getElementById('registerUser').value.trim(), document.getElementById('registerPass').value);
-      } catch (e) { showMessage(e.message); }
-    };
-
-    document.querySelectorAll('.authTab').forEach(tab => {
-      tab.onclick = () => {
-        document.querySelectorAll('.authTab').forEach(x => x.classList.remove('active'));
-        tab.classList.add('active');
-        const registerPanel = document.getElementById('registerPanel');
-        const loginPanel = document.getElementById('loginPanel');
-        const register = tab.dataset.auth === 'register';
-        if (registerPanel) registerPanel.style.display = register ? 'block' : 'none';
-        if (loginPanel) loginPanel.style.display = register ? 'none' : 'block';
-      };
-    });
+  async function restart() {
+    if (!me) { document.getElementById('accountModal').style.display = 'grid'; return; }
+    try { const d = await api('/api/game/restart', { method: 'POST', body: '{}' }); applyStats(d.stats); renderQuestion(d.next); message('Oyun yeniden başladı.'); }
+    catch (e) { message(e.message); }
   }
 
-  function wireGameButtons() {
-    const answerBtn = document.getElementById('answerBtn');
-    const passBtn = document.getElementById('passBtn');
-    const skipBtn = document.getElementById('skipBtn');
-    const restartBtn = document.getElementById('restartBtn');
-    if (answerBtn) answerBtn.onclick = window.answer;
-    if (passBtn) passBtn.onclick = window.skip;
-    if (skipBtn) skipBtn.onclick = window.skip;
-    if (restartBtn) restartBtn.onclick = window.restartGame;
-    const input = document.getElementById('answer');
-    if (input) input.onkeydown = e => { if (e.key === 'Enter') window.answer(); };
+  async function login(register) {
+    const user = document.getElementById(register ? 'registerUser' : 'loginUser')?.value.trim();
+    const pass = document.getElementById(register ? 'registerPass' : 'loginPass')?.value || '';
+    if (!user || !pass) return message('Kullanıcı adı ve şifre gerekli.');
+    try {
+      const d = await api(register ? '/api/auth/register' : '/api/auth/login', { method: 'POST', body: JSON.stringify({ username: user, password: pass }) });
+      me = d.player;
+      document.getElementById('accountModal').style.display = 'none';
+      applyStats(me);
+      if (window.chatSocket?.connected) window.chatSocket.emit('auth:refresh');
+      await startGame();
+    } catch (e) { message(e.message); }
   }
 
-  function patchStartMode() {
-    window.startMode = async function secureStartMode() {
-      const existing = await serverMe();
-      if (!existing) { window.openAccount(); return; }
-      document.querySelector('[data-screen=game]')?.click();
-      await startSecureGame();
-    };
+  async function checkSession() {
+    try { const d = await api('/api/session/me'); me = d.player; return true; } catch { return false; }
+  }
+
+  async function refreshLeaderboard() {
+    try {
+      const d = await api('/api/leaderboard');
+      const list = d.players || [];
+      const mini = document.getElementById('leaderMini');
+      if (mini) mini.innerHTML = list.slice(0, 5).map(x => `<div class="row"><span class="rank">${x.rank}</span><span class="name">${String(x.name).replace(/[&<>]/g,'')}</span><span class="score">${x.rating}</span></div>`).join('');
+      const full = document.getElementById('leaderFull');
+      if (full) full.innerHTML = list.map(x => `<div class="leaderRow"><span>${x.rank}</span><b>${String(x.name).replace(/[&<>]/g,'')}</b><span>${x.xp || 0} XP</span><strong class="score">${x.rating}</strong></div>`).join('');
+      const meCard = document.getElementById('leaderMeCard');
+      const mine = list.find(x => legacyNorm(x.name) === legacyNorm(me?.name));
+      if (meCard && mine) meCard.textContent = `sen: #${mine.rank} • ${mine.rating} rating`;
+    } catch {}
+  }
+
+  function wire() {
+    document.getElementById('loginBtn')?.addEventListener('click', () => login(false));
+    document.getElementById('registerBtn')?.addEventListener('click', () => login(true));
+    document.querySelectorAll('.authTab').forEach(tab => tab.addEventListener('click', () => {
+      const reg = tab.dataset.auth === 'register';
+      document.querySelectorAll('.authTab').forEach(x => x.classList.toggle('active', x === tab));
+      document.getElementById('loginPanel').style.display = reg ? 'none' : 'block';
+      document.getElementById('registerPanel').style.display = reg ? 'block' : 'none';
+    }));
+    document.getElementById('answerBtn').onclick = answer;
+    document.getElementById('passBtn').onclick = pass;
+    document.getElementById('skipBtn').onclick = pass;
+    document.getElementById('restartBtn').onclick = restart;
+    document.getElementById('answer').onkeydown = e => { if (e.key === 'Enter') answer(); };
+    window.startMode = async () => { if (!me && !(await checkSession())) { document.getElementById('accountModal').style.display = 'grid'; return; } document.querySelector('[data-screen=game]')?.click(); await startGame(); };
   }
 
   async function boot() {
-    wireAuth();
-    wireGameButtons();
-    patchStartMode();
-    const me = await serverMe();
-    if (me) {
+    wire();
+    if (await checkSession()) {
       document.getElementById('accountModal').style.display = 'none';
-      await startSecureGame();
+      applyStats(me); await startGame();
     } else {
       document.getElementById('accountModal').style.display = 'grid';
     }
-    if (window.chatSocket) window.chatSocket.emit('auth:refresh');
+    refreshLeaderboard();
+    if (window.chatSocket?.connected) window.chatSocket.emit('auth:refresh');
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
