@@ -46,7 +46,7 @@
           if (!Array.isArray(pool)) continue;
           for (const p of pool) {
             if (!p || !p.name) continue;
-            catalog.push({ name: p.name, difficulty: Number(difficulty) || 1, aliases: [] });
+            catalog.push({ name: p.name, difficulty: Number(difficulty) || 1, aliases: Array.isArray(p.aliases) ? p.aliases : [] });
           }
         }
         return catalog;
@@ -81,17 +81,18 @@
     fallback.style.display = 'grid';
     if (status) status.textContent = 'GÖRSEL YÜKLENİYOR...';
     try {
-      const r = await fetch('/api/player-image?name=' + encodeURIComponent(name));
-      if (!r.ok) throw new Error('image not found');
-      const d = await r.json();
-      if (!d.url) throw new Error('image not found');
+      const imageUrl = '/api/player-image?name=' + encodeURIComponent(name) + '&raw=1';
       img.onload = () => {
         fallback.style.display = 'none';
         img.style.display = 'block';
         if (status) status.textContent = '';
       };
-      img.onerror = () => { if (status) status.textContent = 'GÖRSEL BULUNAMADI'; };
-      img.src = d.url;
+      img.onerror = () => {
+        img.style.display = 'none';
+        fallback.style.display = 'grid';
+        if (status) status.textContent = 'GÖRSEL BULUNAMADI';
+      };
+      img.src = imageUrl;
     } catch {
       if (status) status.textContent = 'GÖRSEL BULUNAMADI';
     }
