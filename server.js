@@ -182,6 +182,22 @@ async function saveChat(msg) {
   messages = messages.slice(-200);
 }
 
+app.get('/api/player-image', async (req, res) => {
+  const name = clean(req.query?.name, 120);
+  if (!name) return res.status(400).json({ error: 'name required' });
+  try {
+    const url = 'https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(name.replace(/\s+/g, '_'));
+    const r = await fetch(url, { headers: { 'User-Agent': 'FutbolcuyuBil/1.0' } });
+    if (!r.ok) return res.status(404).json({ error: 'image not found' });
+    const d = await r.json();
+    if (!d.thumbnail?.source) return res.status(404).json({ error: 'image not found' });
+    res.json({ url: d.thumbnail.source });
+  } catch (e) {
+    console.error('player image proxy error', e);
+    res.status(502).json({ error: 'image lookup failed' });
+  }
+});
+
 app.use(express.static(__dirname));
 app.get('/health', async (_, res) => {
   res.json({ ok: true, online: io.engine.clientsCount, leaderboard: leaderboard.size, database: dbReady });
