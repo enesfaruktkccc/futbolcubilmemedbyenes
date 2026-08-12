@@ -1,1 +1,0 @@
-catalog fix and image proxy validation
