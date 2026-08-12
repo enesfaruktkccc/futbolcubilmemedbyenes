@@ -14,14 +14,42 @@
   let me = null;
   let question = null;
   let hintsUsed = new Set();
+  let secureSocket = null;
 
-  const legacyPlayers = () => {
-    try { return eval('players'); } catch { return []; }
-  };
   const legacyNorm = s => String(s || '').toLocaleLowerCase('tr-TR').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ı/g, 'i').replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
 
+  function parseLegacyCatalog() {
+    const script = [...document.scripts].find(s => !s.src && s.textContent.includes('const playerNames = [') && s.textContent.includes('const difficultyOverrides='));
+    if (!script) return [];
+    try {
+      const text = script.textContent;
+      const namesMatch = text.match(/const playerNames\s*=\s*(\[[\s\S]*?\]);\s*const uniquePlayerNames/);
+      const overrideMatch = text.match(/const difficultyOverrides\s*=\s*(\{[\s\S]*?\});\s*const players=/);
+      if (!namesMatch) return [];
+      const names = Function(`"use strict"; return (${namesMatch[1]});`)();
+      const overrides = overrideMatch ? Function(`"use strict"; return (${overrideMatch[1]});`)() : {};
+      const seen = new Set();
+      return names.map((name, i) => {
+        const key = legacyNorm(name);
+        if (!key || seen.has(key)) return null;
+        seen.add(key);
+        const difficulty = Number(overrides[name]) || (i < 50 ? 1 : i < 150 ? 2 : i < 300 ? 3 : i < 400 ? 4 : 5);
+        return { name, difficulty, aliases: [] };
+      }).filter(Boolean);
+    } catch (e) {
+      console.error('Oyuncu kataloğu okunamadı', e);
+      return [];
+    }
+  }
+
   function catalog() {
-    return legacyPlayers().map(p => ({ name: p.name, difficulty: p.difficulty, aliases: [] }));
+    const list = parseLegacyCatalog();
+    if (list.length < 100) throw new Error('Futbolcu kataloğu yüklenemedi.');
+    return list.map((p, i, arr) => ({
+      name: p.name,
+      difficulty: p.difficulty === 5 && i >= Math.max(0, arr.length - 45) ? 6 : p.difficulty,
+      aliases: []
+    }));
   }
 
   function message(text) {
@@ -40,8 +68,6 @@
     if (avatar) avatar.textContent = (s.name || me?.name || '?')[0].toUpperCase();
     if (topName) topName.textContent = s.name || me?.name || 'Oyuncu';
     if (account) account.textContent = s.name || me?.name || 'Giriş yap';
-    const mini = document.getElementById('leaderMini');
-    if (mini && me) mini.dataset.secure = '1';
   }
 
   async function loadQuestionImage(name) {
@@ -63,8 +89,6 @@
     hintsUsed = new Set();
     const difficulty = document.getElementById('difficulty');
     if (difficulty) difficulty.textContent = q.difficultyName || '';
-    const title = document.querySelector('.question h1');
-    if (title) title.innerHTML = 'BU FUTBOLCU <span>KİM?</span>';
     renderHints();
     loadQuestionImage(q.name);
   }
@@ -86,7 +110,8 @@
         if (hintsUsed.has(i) || !question) return;
         try {
           const d = await api('/api/game/hint', { method: 'POST', body: JSON.stringify({ questionId: question.id, index: i }) });
-          hintsUsed.add(i); b.textContent = d.label || label;
+          hintsUsed.add(i);
+          b.textContent = d.label || label;
         } catch (e) { message(e.message); }
       };
       box.appendChild(b);
@@ -107,9 +132,11 @@
     if (!value || !question) return;
     try {
       const d = await api('/api/game/answer', { method: 'POST', body: JSON.stringify({ questionId: question.id, answer: value }) });
-      input.value = ''; applyStats(d.stats); message(d.message); renderQuestion(d.next);
-      refreshLeaderboard();
-    } catch (e) { message(e.message); }
+      input.value = ''; applyStats(d.stats); message(d.message); renderQuestion(d.next); refreshLeaderboard();
+    } catch (e) {
+      message(e.message);
+      if (e.message.includes('Soru')) await startGame();
+    }
   }
 
   async function pass() {
@@ -124,8 +151,10 @@
 
   async function restart() {
     if (!me) { document.getElementById('accountModal').style.display = 'grid'; return; }
-    try { const d = await api('/api/game/restart', { method: 'POST', body: '{}' }); applyStats(d.stats); renderQuestion(d.next); message('Oyun yeniden başladı.'); }
-    catch (e) { message(e.message); }
+    try {
+      const d = await api('/api/game/restart', { method: 'POST', body: '{}' });
+      applyStats(d.stats); renderQuestion(d.next); message('Oyun yeniden başladı.');
+    } catch (e) { message(e.message); }
   }
 
   async function login(register) {
@@ -137,8 +166,9 @@
       me = d.player;
       document.getElementById('accountModal').style.display = 'none';
       applyStats(me);
-      if (window.chatSocket?.connected) window.chatSocket.emit('auth:refresh');
+      authenticateSocket();
       await startGame();
+      refreshLeaderboard();
     } catch (e) { message(e.message); }
   }
 
@@ -160,6 +190,72 @@
     } catch {}
   }
 
+  function drawSecureChat(messages) {
+    const views = ['chatBox', 'chatBoxGame', 'chatBoxMobile'];
+    views.forEach(id => {
+      const box = document.getElementById(id);
+      if (!box) return;
+      box.innerHTML = (messages || []).slice(-80).map(m => `<div class="chatMsg"><b>${String(m.user || '').replace(/[&<>]/g, '')}</b>${String(m.text || '').replace(/[&<>]/g, '')}<span class="chatTime">${new Date(m.at || Date.now()).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'})}</span></div>`).join('') || '<div class="chatEmpty">henüz mesaj yok.</div>';
+      box.scrollTop = box.scrollHeight;
+    });
+  }
+
+  function wireSecureChat() {
+    if (typeof io !== 'function') return;
+    secureSocket = io({ transports: ['websocket', 'polling'] });
+    secureSocket.on('connect', () => {
+      authenticateSocket();
+      const statuses = ['chatStatus', 'chatStatusGame', 'chatStatusMobile'];
+      statuses.forEach(id => { const el = document.getElementById(id); if (el) { el.textContent = '● çevrimiçi'; el.classList.add('online'); } });
+    });
+    secureSocket.on('disconnect', () => {
+      ['chatStatus','chatStatusGame','chatStatusMobile'].forEach(id => { const el = document.getElementById(id); if (el) { el.textContent = '● çevrimdışı'; el.classList.remove('online'); } });
+    });
+    secureSocket.on('chat:history', drawSecureChat);
+    secureSocket.on('chat:message', msg => {
+      const boxes = ['chatBox','chatBoxGame','chatBoxMobile'];
+      const current = [];
+      boxes.forEach(id => {
+        const box = document.getElementById(id);
+        if (!box) return;
+        for (const child of box.children) {
+          const name = child.querySelector('b')?.textContent;
+          const text = child.childNodes[1]?.textContent;
+          if (name && text) current.push({ user: name, text, at: Date.now() });
+        }
+      });
+      current.push(msg);
+      drawSecureChat(current.slice(-80));
+    });
+    secureSocket.on('leaderboard:state', refreshLeaderboard);
+    wireChatForms();
+  }
+
+  function authenticateSocket() {
+    if (secureSocket?.connected) secureSocket.emit('auth:refresh');
+  }
+
+  function wireChatForms() {
+    const pairs = [
+      ['chatForm','chatMessage'], ['chatFormGame','chatMessageGame'], ['chatFormMobile','chatMessageMobile']
+    ];
+    pairs.forEach(([formId, inputId]) => {
+      const form = document.getElementById(formId);
+      const input = document.getElementById(inputId);
+      if (!form || !input) return;
+      form.onsubmit = e => {
+        e.preventDefault();
+        const text = input.value.trim();
+        if (!text) return;
+        if (!me) { document.getElementById('accountModal').style.display = 'grid'; return; }
+        if (!secureSocket?.connected) return message('Chat bağlantısı yok.');
+        secureSocket.emit('chat:message', { text: text.slice(0, 180) });
+        input.value = '';
+        input.focus();
+      };
+    });
+  }
+
   function wire() {
     document.getElementById('loginBtn')?.addEventListener('click', () => login(false));
     document.getElementById('registerBtn')?.addEventListener('click', () => login(true));
@@ -174,19 +270,23 @@
     document.getElementById('skipBtn').onclick = pass;
     document.getElementById('restartBtn').onclick = restart;
     document.getElementById('answer').onkeydown = e => { if (e.key === 'Enter') answer(); };
-    window.startMode = async () => { if (!me && !(await checkSession())) { document.getElementById('accountModal').style.display = 'grid'; return; } document.querySelector('[data-screen=game]')?.click(); await startGame(); };
+    window.startMode = async () => {
+      if (!me && !(await checkSession())) { document.getElementById('accountModal').style.display = 'grid'; return; }
+      document.querySelector('[data-screen=game]')?.click();
+      await startGame();
+    };
+    wireSecureChat();
   }
 
   async function boot() {
     wire();
     if (await checkSession()) {
       document.getElementById('accountModal').style.display = 'none';
-      applyStats(me); await startGame();
+      applyStats(me); authenticateSocket(); await startGame();
     } else {
       document.getElementById('accountModal').style.display = 'grid';
     }
     refreshLeaderboard();
-    if (window.chatSocket?.connected) window.chatSocket.emit('auth:refresh');
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
