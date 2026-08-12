@@ -11,8 +11,6 @@ const io = new Server(server, { cors: { origin: true, credentials: true } });
 const PORT = process.env.PORT || 3000;
 const DATA = path.join(__dirname, 'chat-messages.json');
 
-// PostgreSQL is the durable store used in production (Render/Supabase/etc.).
-// The JSON fallback keeps local development working when DATABASE_URL is absent.
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -184,16 +182,30 @@ async function saveChat(msg) {
 
 app.get('/api/player-image', async (req, res) => {
   const name = clean(req.query?.name, 120);
+  const raw = req.query?.raw === '1';
   if (!name) return res.status(400).json({ error: 'name required' });
   try {
     const url = 'https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(name.replace(/\s+/g, '_'));
     const r = await fetch(url, { headers: { 'User-Agent': 'FutbolcuyuBil/1.0' } });
     if (!r.ok) return res.status(404).json({ error: 'image not found' });
     const d = await r.json();
-    if (!d.thumbnail?.source) return res.status(404).json({ error: 'image not found' });
-    res.json({ url: d.thumbnail.source });
+    const imageUrl = d.thumbnail?.source;
+    if (!imageUrl) return res.status(404).json({ error: 'image not found' });
+
+    if (!raw) return res.json({ url: imageUrl });
+
+    const imageResponse = await fetch(imageUrl, {
+      headers: { 'User-Agent': 'FutbolcuyuBil/1.0' }
+    });
+    if (!imageResponse.ok) return res.status(404).json({ error: 'image download failed' });
+    const contentType = imageResponse.headers.get('content-type') || 'image/jpeg';
+    const buffer = Buffer.from(await imageResponse.arrayBuffer());
+    res.set('Content-Type', contentType);
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(buffer);
   } catch (e) {
     console.error('player image proxy error', e);
+    if (raw) return res.status(502).send('image lookup failed');
     res.status(502).json({ error: 'image lookup failed' });
   }
 });
@@ -216,7 +228,6 @@ io.on('connection', socket => {
       const key = incoming.name.toLowerCase();
       let existing = leaderboard.get(key);
 
-      // Never wipe a returning player's saved score with a client's default zeros.
       if (pool && dbReady) {
         const result = await pool.query(`
           SELECT name, rating, xp, weekly_xp, month_xp, correct, total, streak,
