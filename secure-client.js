@@ -251,22 +251,29 @@
   }
 
   function wire() {
-    document.getElementById('loginBtn')?.addEventListener('click', () => auth(false));
-    document.getElementById('registerBtn')?.addEventListener('click', () => auth(true));
-    document.querySelectorAll('.authTab').forEach(tab => tab.addEventListener('click', () => {
+    const loginBtn = document.getElementById('loginBtn');
+    const registerBtn = document.getElementById('registerBtn');
+    if (loginBtn) loginBtn.onclick = () => auth(false);
+    if (registerBtn) registerBtn.onclick = () => auth(true);
+    document.querySelectorAll('.authTab').forEach(tab => tab.onclick = () => {
       const register = tab.dataset.auth === 'register';
       document.querySelectorAll('.authTab').forEach(x => x.classList.toggle('active', x === tab));
       const loginPanel = document.getElementById('loginPanel');
       const registerPanel = document.getElementById('registerPanel');
       if (loginPanel) loginPanel.style.display = register ? 'none' : 'block';
       if (registerPanel) registerPanel.style.display = register ? 'block' : 'none';
-    }));
+    });
 
-    document.getElementById('answerBtn')?.addEventListener('click', answer);
-    document.getElementById('passBtn')?.addEventListener('click', pass);
-    document.getElementById('skipBtn')?.addEventListener('click', pass);
-    document.getElementById('restartBtn')?.addEventListener('click', restart);
-    document.getElementById('answer')?.addEventListener('keydown', e => { if (e.key === 'Enter') answer(); });
+    const answerBtn = document.getElementById('answerBtn');
+    const passBtn = document.getElementById('passBtn');
+    const skipBtn = document.getElementById('skipBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    if (answerBtn) answerBtn.onclick = answer;
+    if (passBtn) passBtn.onclick = pass;
+    if (skipBtn) skipBtn.onclick = pass;
+    if (restartBtn) restartBtn.onclick = restart;
+    const answerInput = document.getElementById('answer');
+    if (answerInput) answerInput.onkeydown = e => { if (e.key === 'Enter') answer(); };
 
     window.startMode = async () => {
       if (!me && !(await checkSession())) { openAccount(); return; }
