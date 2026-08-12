@@ -1,1 +1,343 @@
-(() => {'use strict'; const api=(url,options={})=>fetch(url,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}}).then(async r=>{const data=await r.json().catch(()=>({}));if(!r.ok)throw new Error(data.error||`HTTP ${r.status}`);return data}); let me=null,question=null,hintsUsed=new Set(); function showMessage(text){console.log('[Futbolcuyu Bil]',text);const imageStatus=document.getElementById('imageStatus');if(imageStatus&&String(text).length<=90)imageStatus.textContent=String(text)} function openAccount(){const modal=document.getElementById('accountModal');if(modal)modal.style.display='grid'} function setScreen(name){document.querySelectorAll('.screen').forEach(screen=>{const active=screen.id===name;screen.classList.toggle('active',active);screen.style.display=active?'':'none'});document.querySelectorAll('[data-screen]').forEach(button=>button.classList.toggle('active',button.dataset.screen===name));window.scrollTo({top:0,behavior:'instant'})} function getCatalog(){try{if(typeof difficultyPools!=='undefined'&&difficultyPools){const catalog=[];for(const[difficulty,pool]of Object.entries(difficultyPools)){if(!Array.isArray(pool))continue;for(const p of pool){if(!p||!p.name)continue;catalog.push({name:p.name,difficulty:Number(difficulty)||1,aliases:[]})}}return catalog}if(typeof playerNames!=='undefined'&&Array.isArray(playerNames))return playerNames.map(name=>({name,difficulty:1,aliases:[]}));if(Array.isArray(window.players))return window.players.map(p=>({name:p.name,difficulty:Number(p.difficulty)||1,aliases:Array.isArray(p.aliases)?p.aliases:[]}))}catch(e){console.error('players list error',e)}return[]} function applyStats(s){if(!s)return;for(const[id,value]of Object.entries({correct:s.correct,total:s.total,streak:s.streak})){const el=document.getElementById(id);if(el)el.textContent=String(value??0)}const avatar=document.getElementById('avatar'),top=document.getElementById('userNameTop'),account=document.getElementById('accountSide');if(avatar)avatar.textContent=(s.name||me?.name||'?')[0].toUpperCase();if(top)top.textContent=s.name||me?.name||'Oyuncu';if(account)account.textContent=s.name||me?.name||'Giriş yap'} async function renderImage(name){const img=document.getElementById('playerPhoto'),fallback=document.getElementById('fallbackPlayer'),status=document.getElementById('imageStatus');if(!img||!fallback)return;img.style.display='none';fallback.style.display='grid';if(status)status.textContent='GÖRSEL YÜKLENİYOR...';try{const r=await fetch('/api/player-image?name='+encodeURIComponent(name));if(!r.ok)throw 0;const d=await r.json();if(!d.url)throw 0;img.onload=()=>{fallback.style.display='none';img.style.display='block';if(status)status.textContent=''};img.onerror=()=>{if(status)status.textContent='GÖRSEL BULUNAMADI'};img.src=d.url}catch{if(status)status.textContent='GÖRSEL BULUNAMADI'}} function renderHints(){const box=document.getElementById('hints');if(!box||!question)return;const labels=[`Adı ${question.name.length} karakter`,`İlk harfi: ${question.name[0]?.toUpperCase()||'?'}`,`Soyadının ilk harfi: ${question.name.split(' ').pop()?.[0]?.toUpperCase()||'?'}`],costs=[5,5,15];box.innerHTML='';labels.forEach((label,i)=>{const button=document.createElement('button');button.className='hint';button.textContent=hintsUsed.has(i)?label:`İPUCU ${i+1} • -${costs[i]}`;button.onclick=async()=>{if(!question||hintsUsed.has(i))return;try{const result=await api('/api/game/hint',{method:'POST',body:JSON.stringify({questionId:question.id,index:i})});hintsUsed.add(i);button.textContent=result.label||label}catch(e){showMessage(e.message)}};box.appendChild(button)})} function renderQuestion(q){question=q;hintsUsed=new Set();const difficulty=document.getElementById('difficulty');if(difficulty)difficulty.textContent=q.difficultyName||'';renderHints();renderImage(q.name)} async function startGame(){if(!me){openAccount();return false}const catalog=getCatalog();if(catalog.length<100){showMessage(`Futbolcu listesi okunamadı (${catalog.length}).`);return false}try{const result=await api('/api/game/start',{method:'POST',body:JSON.stringify({catalog})});applyStats(result.stats);renderQuestion(result.question);return true}catch(e){showMessage(e.message);console.error('game start failed',e);return false}} async function answer(){if(!me){openAccount();return}const input=document.getElementById('answer'),value=input?.value.trim();if(!value||!question)return;try{const result=await api('/api/game/answer',{method:'POST',body:JSON.stringify({questionId:question.id,answer:value})});input.value='';applyStats(result.stats);showMessage(result.message);renderQuestion(result.next);refreshLeaderboard()}catch(e){showMessage(e.message)}} async function pass(){if(!me){openAccount();return}if(!question)return;try{const result=await api('/api/game/pass',{method:'POST',body:JSON.stringify({questionId:question.id})});const input=document.getElementById('answer');if(input)input.value='';applyStats(result.stats);showMessage(result.message);renderQuestion(result.next);refreshLeaderboard()}catch(e){showMessage(e.message)}} async function restart(){if(!me){openAccount();return}try{const result=await api('/api/game/restart',{method:'POST',body:'{}'});applyStats(result.stats);renderQuestion(result.next);showMessage('Oyun yeniden başladı.')}catch(e){showMessage(e.message)}} async function auth(register){const usernameId=register?'registerUser':'loginUser',passwordId=register?'registerPass':'loginPass',username=document.getElementById(usernameId)?.value.trim(),password=document.getElementById(passwordId)?.value||'';if(!username||!password){showMessage('Kullanıcı adı ve şifre gerekli.');return}try{const result=await api(register?'/api/auth/register':'/api/auth/login',{method:'POST',body:JSON.stringify({username,password})});me=result.player;const modal=document.getElementById('accountModal');if(modal)modal.style.display='none';applyStats(me);setScreen('game');await startGame();await refreshLeaderboard()}catch(e){showMessage(e.message)}} async function checkSession(){try{const result=await api('/api/session/me');me=result.player;return true}catch{return false}} async function refreshLeaderboard(){try{const result=await api('/api/leaderboard'),list=result.players||[],safe=value=>String(value).replace(/[&<>]/g,'');const mini=document.getElementById('leaderMini');if(mini)mini.innerHTML=list.slice(0,5).map(x=>`<div class="row"><span class="rank">${x.rank}</span><span class="name">${safe(x.name)}</span><span class="score">${x.rating}</span></div>`).join('');const full=document.getElementById('leaderFull');if(full)full.innerHTML=list.map(x=>`<div class="leaderRow"><span>${x.rank}</span><b>${safe(x.name)}</b><span>${x.xp||0} XP</span><strong class="score">${x.rating}</strong></div>`).join('');const meCard=document.getElementById('leaderMeCard'),mine=list.find(x=>String(x.name).toLocaleLowerCase('tr-TR')===String(me?.name).toLocaleLowerCase('tr-TR'));if(meCard&&mine)meCard.textContent=`sen: #${mine.rank} • ${mine.rating} rating`}catch(e){console.error('leaderboard failed',e)}} function wireNavigation(){document.querySelectorAll('[data-screen]').forEach(button=>{button.onclick=async()=>{const target=button.dataset.screen;setScreen(target);if(target==='game'&&me)await startGame()}});window.startMode=async()=>{if(!me&&!(await checkSession())){openAccount();return}setScreen('game');await startGame()};window.answerSecure=answer} function wireGame(){const answerButton=document.getElementById('answerBtn'),passButton=document.getElementById('passBtn'),skipButton=document.getElementById('skipBtn'),restartButton=document.getElementById('restartBtn'),answerInput=document.getElementById('answer');if(answerButton)answerButton.onclick=answer;if(passButton)passButton.onclick=pass;if(skipButton)skipButton.onclick=pass;if(restartButton)restartButton.onclick=restart;if(answerInput)answerInput.onkeydown=e=>{if(e.key==='Enter')answer()}} async function boot(){wireNavigation();wireGame();const login=document.getElementById('loginBtn'),register=document.getElementById('registerBtn');if(login)login.onclick=()=>auth(false);if(register)register.onclick=()=>auth(true);document.querySelectorAll('.authTab').forEach(tab=>{tab.onclick=()=>{const isRegister=tab.dataset.auth==='register';document.querySelectorAll('.authTab').forEach(t=>t.classList.toggle('active',t===tab));const lp=document.getElementById('loginPanel'),rp=document.getElementById('registerPanel');if(lp)lp.style.display=isRegister?'none':'block';if(rp)rp.style.display=isRegister?'block':'none'}});if(await checkSession()){const modal=document.getElementById('accountModal');if(modal)modal.style.display='none';applyStats(me);setScreen('home')}else{setScreen('home');openAccount()}refreshLeaderboard()}if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot()})();
+(() => {
+  'use strict';
+
+  const api = (url, options = {}) => fetch(url, {
+    credentials: 'same-origin',
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+  }).then(async r => {
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    return data;
+  });
+
+  let me = null;
+  let question = null;
+  let hintsUsed = new Set();
+
+  function showMessage(text) {
+    console.log('[Futbolcuyu Bil]', text);
+    const imageStatus = document.getElementById('imageStatus');
+    if (imageStatus && String(text).length <= 90) imageStatus.textContent = String(text);
+  }
+
+  function openAccount() {
+    const modal = document.getElementById('accountModal');
+    if (modal) modal.style.display = 'grid';
+  }
+
+  function setScreen(name) {
+    document.querySelectorAll('.screen').forEach(screen => {
+      const active = screen.id === name;
+      screen.classList.toggle('active', active);
+      screen.style.display = active ? '' : 'none';
+    });
+    document.querySelectorAll('[data-screen]').forEach(button => {
+      button.classList.toggle('active', button.dataset.screen === name);
+    });
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }
+
+  function getCatalog() {
+    try {
+      if (typeof difficultyPools !== 'undefined' && difficultyPools) {
+        const catalog = [];
+        for (const [difficulty, pool] of Object.entries(difficultyPools)) {
+          if (!Array.isArray(pool)) continue;
+          for (const p of pool) {
+            if (!p || !p.name) continue;
+            catalog.push({
+              name: p.name,
+              difficulty: Number(difficulty) || 1,
+              aliases: Array.isArray(p.aliases) ? p.aliases : []
+            });
+          }
+        }
+        return catalog;
+      }
+      if (typeof playerNames !== 'undefined' && Array.isArray(playerNames)) {
+        return playerNames.map(name => ({ name, difficulty: 1, aliases: [] }));
+      }
+      if (Array.isArray(window.players)) {
+        return window.players.map(p => ({
+          name: p.name,
+          difficulty: Number(p.difficulty) || 1,
+          aliases: Array.isArray(p.aliases) ? p.aliases : []
+        }));
+      }
+    } catch (e) {
+      console.error('players list error', e);
+    }
+    return [];
+  }
+
+  function applyStats(s) {
+    if (!s) return;
+    const map = { correct: s.correct, total: s.total, streak: s.streak };
+    Object.entries(map).forEach(([id, value]) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(value ?? 0);
+    });
+    const avatar = document.getElementById('avatar');
+    const top = document.getElementById('userNameTop');
+    const account = document.getElementById('accountSide');
+    if (avatar) avatar.textContent = (s.name || me?.name || '?')[0].toUpperCase();
+    if (top) top.textContent = s.name || me?.name || 'Oyuncu';
+    if (account) account.textContent = s.name || me?.name || 'Giriş yap';
+  }
+
+  async function renderImage(name) {
+    const img = document.getElementById('playerPhoto');
+    const fallback = document.getElementById('fallbackPlayer');
+    const status = document.getElementById('imageStatus');
+    if (!img || !fallback) return;
+    img.style.display = 'none';
+    fallback.style.display = 'grid';
+    if (status) status.textContent = 'GÖRSEL YÜKLENİYOR...';
+    try {
+      const r = await fetch('/api/player-image?name=' + encodeURIComponent(name));
+      if (!r.ok) throw new Error('image not found');
+      const d = await r.json();
+      if (!d.url) throw new Error('image not found');
+      img.onload = () => {
+        fallback.style.display = 'none';
+        img.style.display = 'block';
+        if (status) status.textContent = '';
+      };
+      img.onerror = () => {
+        if (status) status.textContent = 'GÖRSEL BULUNAMADI';
+      };
+      img.src = d.url;
+    } catch {
+      if (status) status.textContent = 'GÖRSEL BULUNAMADI';
+    }
+  }
+
+  function renderHints() {
+    const box = document.getElementById('hints');
+    if (!box || !question) return;
+    const labels = [
+      `Adı ${question.name.length} karakter`,
+      `İlk harfi: ${question.name[0]?.toUpperCase() || '?'}`,
+      `Soyadının ilk harfi: ${question.name.split(' ').pop()?.[0]?.toUpperCase() || '?'}`
+    ];
+    const costs = [5, 5, 15];
+    box.innerHTML = '';
+    labels.forEach((label, i) => {
+      const button = document.createElement('button');
+      button.className = 'hint';
+      button.textContent = hintsUsed.has(i) ? label : `İPUCU ${i + 1} • -${costs[i]}`;
+      button.onclick = async () => {
+        if (!question || hintsUsed.has(i)) return;
+        try {
+          const result = await api('/api/game/hint', {
+            method: 'POST',
+            body: JSON.stringify({ questionId: question.id, index: i })
+          });
+          hintsUsed.add(i);
+          button.textContent = result.label || label;
+        } catch (e) {
+          showMessage(e.message);
+        }
+      };
+      box.appendChild(button);
+    });
+  }
+
+  function renderQuestion(q) {
+    question = q;
+    hintsUsed = new Set();
+    const difficulty = document.getElementById('difficulty');
+    if (difficulty) difficulty.textContent = q.difficultyName || '';
+    renderHints();
+    renderImage(q.name);
+  }
+
+  async function startGame() {
+    if (!me) { openAccount(); return false; }
+    const catalog = getCatalog();
+    if (catalog.length < 100) {
+      showMessage(`Futbolcu listesi okunamadı (${catalog.length}).`);
+      return false;
+    }
+    try {
+      const result = await api('/api/game/start', {
+        method: 'POST',
+        body: JSON.stringify({ catalog })
+      });
+      applyStats(result.stats);
+      renderQuestion(result.question);
+      return true;
+    } catch (e) {
+      showMessage(e.message);
+      console.error('game start failed', e);
+      return false;
+    }
+  }
+
+  async function answer() {
+    if (!me) { openAccount(); return; }
+    const input = document.getElementById('answer');
+    const value = input?.value.trim();
+    if (!value || !question) return;
+    try {
+      const result = await api('/api/game/answer', {
+        method: 'POST',
+        body: JSON.stringify({ questionId: question.id, answer: value })
+      });
+      input.value = '';
+      applyStats(result.stats);
+      showMessage(result.message);
+      renderQuestion(result.next);
+      refreshLeaderboard();
+    } catch (e) {
+      showMessage(e.message);
+    }
+  }
+
+  async function pass() {
+    if (!me) { openAccount(); return; }
+    if (!question) return;
+    try {
+      const result = await api('/api/game/pass', {
+        method: 'POST',
+        body: JSON.stringify({ questionId: question.id })
+      });
+      const input = document.getElementById('answer');
+      if (input) input.value = '';
+      applyStats(result.stats);
+      showMessage(result.message);
+      renderQuestion(result.next);
+      refreshLeaderboard();
+    } catch (e) {
+      showMessage(e.message);
+    }
+  }
+
+  async function restart() {
+    if (!me) { openAccount(); return; }
+    try {
+      const result = await api('/api/game/restart', { method: 'POST', body: '{}' });
+      applyStats(result.stats);
+      renderQuestion(result.next);
+      showMessage('Oyun yeniden başladı.');
+    } catch (e) {
+      showMessage(e.message);
+    }
+  }
+
+  async function auth(register) {
+    const usernameId = register ? 'registerUser' : 'loginUser';
+    const passwordId = register ? 'registerPass' : 'loginPass';
+    const username = document.getElementById(usernameId)?.value.trim();
+    const password = document.getElementById(passwordId)?.value || '';
+    if (!username || !password) {
+      showMessage('Kullanıcı adı ve şifre gerekli.');
+      return;
+    }
+    try {
+      const result = await api(register ? '/api/auth/register' : '/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password })
+      });
+      me = result.player;
+      const modal = document.getElementById('accountModal');
+      if (modal) modal.style.display = 'none';
+      applyStats(me);
+      setScreen('game');
+      await startGame();
+      await refreshLeaderboard();
+    } catch (e) {
+      showMessage(e.message);
+    }
+  }
+
+  async function checkSession() {
+    try {
+      const result = await api('/api/session/me');
+      me = result.player;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function refreshLeaderboard() {
+    try {
+      const result = await api('/api/leaderboard');
+      const list = result.players || [];
+      const safe = value => String(value).replace(/[&<>]/g, '');
+      const mini = document.getElementById('leaderMini');
+      if (mini) mini.innerHTML = list.slice(0, 5).map(x => `<div class="row"><span class="rank">${x.rank}</span><span class="name">${safe(x.name)}</span><span class="score">${x.rating}</span></div>`).join('');
+      const full = document.getElementById('leaderFull');
+      if (full) full.innerHTML = list.map(x => `<div class="leaderRow"><span>${x.rank}</span><b>${safe(x.name)}</b><span>${x.xp || 0} XP</span><strong class="score">${x.rating}</strong></div>`).join('');
+      const meCard = document.getElementById('leaderMeCard');
+      const mine = list.find(x => String(x.name).toLocaleLowerCase('tr-TR') === String(me?.name).toLocaleLowerCase('tr-TR'));
+      if (meCard && mine) meCard.textContent = `sen: #${mine.rank} • ${mine.rating} rating`;
+    } catch (e) {
+      console.error('leaderboard failed', e);
+    }
+  }
+
+  function wireNavigation() {
+    document.querySelectorAll('[data-screen]').forEach(button => {
+      button.onclick = async () => {
+        const target = button.dataset.screen;
+        setScreen(target);
+        if (target === 'game' && me) await startGame();
+      };
+    });
+    window.startMode = async () => {
+      if (!me && !(await checkSession())) { openAccount(); return; }
+      setScreen('game');
+      await startGame();
+    };
+    window.answerSecure = answer;
+  }
+
+  function wireGame() {
+    const answerButton = document.getElementById('answerBtn');
+    const passButton = document.getElementById('passBtn');
+    const skipButton = document.getElementById('skipBtn');
+    const restartButton = document.getElementById('restartBtn');
+    const answerInput = document.getElementById('answer');
+    if (answerButton) answerButton.onclick = answer;
+    if (passButton) passButton.onclick = pass;
+    if (skipButton) skipButton.onclick = pass;
+    if (restartButton) restartButton.onclick = restart;
+    if (answerInput) answerInput.onkeydown = e => { if (e.key === 'Enter') answer(); };
+  }
+
+  async function boot() {
+    wireNavigation();
+    wireGame();
+    const login = document.getElementById('loginBtn');
+    const register = document.getElementById('registerBtn');
+    if (login) login.onclick = () => auth(false);
+    if (register) register.onclick = () => auth(true);
+    document.querySelectorAll('.authTab').forEach(tab => {
+      tab.onclick = () => {
+        const isRegister = tab.dataset.auth === 'register';
+        document.querySelectorAll('.authTab').forEach(t => t.classList.toggle('active', t === tab));
+        const lp = document.getElementById('loginPanel');
+        const rp = document.getElementById('registerPanel');
+        if (lp) lp.style.display = isRegister ? 'none' : 'block';
+        if (rp) rp.style.display = isRegister ? 'block' : 'none';
+      };
+    });
+
+    if (await checkSession()) {
+      const modal = document.getElementById('accountModal');
+      if (modal) modal.style.display = 'none';
+      applyStats(me);
+      setScreen('home');
+    } else {
+      setScreen('home');
+      openAccount();
+    }
+    refreshLeaderboard();
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+})();
